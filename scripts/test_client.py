@@ -288,6 +288,69 @@ async def cmd_station_bikes(args: argparse.Namespace) -> int:
             return 1
 
 
+async def cmd_refresh(args: argparse.Namespace) -> int:
+    """Handle the refresh command."""
+    config_path = Path(args.config)
+    token_info = load_token(config_path)
+
+    if token_info is None:
+        print("Not logged in. Run 'login' first.")
+        return 1
+
+    if token_info.refresh_token is None:
+        print("No refresh token available. Run 'login' again.")
+        return 1
+
+    # Show current token status
+    print(f"Current token: {token_info.access_token[:20]}...")
+    if token_info.expires_in_seconds is not None:
+        hours = token_info.expires_in_seconds // 3600
+        minutes = (token_info.expires_in_seconds % 3600) // 60
+        print(f"Expires in: {hours}h {minutes}m")
+    print(f"Is expired: {token_info.is_expired}")
+
+    async with BayWheelsClient(token_info=token_info) as client:
+        try:
+            print("\nRefreshing token...")
+            new_token_info = await client.refresh_token()
+            save_token(new_token_info, config_path)
+            print(f"Token refreshed successfully!")
+            print(f"New token: {new_token_info.access_token[:20]}...")
+            if new_token_info.expires_in_seconds is not None:
+                hours = new_token_info.expires_in_seconds // 3600
+                minutes = (new_token_info.expires_in_seconds % 3600) // 60
+                print(f"Expires in: {hours}h {minutes}m")
+            return 0
+
+        except AuthenticationError as e:
+            print(f"Token refresh failed: {e}")
+            print("You may need to run 'login' again.")
+            return 1
+
+
+async def cmd_status(args: argparse.Namespace) -> int:
+    """Handle the status command."""
+    config_path = Path(args.config)
+    token_info = load_token(config_path)
+
+    if token_info is None:
+        print("Not logged in.")
+        return 0
+
+    print(f"Access token: {token_info.access_token[:20]}...")
+    print(f"Refresh token: {'Yes' if token_info.refresh_token else 'No'}")
+
+    if token_info.expires_in_seconds is not None:
+        hours = token_info.expires_in_seconds // 3600
+        minutes = (token_info.expires_in_seconds % 3600) // 60
+        print(f"Expires in: {hours}h {minutes}m")
+        print(f"Is expired: {token_info.is_expired}")
+    else:
+        print("Expiration: Unknown")
+
+    return 0
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -344,6 +407,12 @@ def main() -> int:
     )
     bikes_parser.add_argument("station_id", help="Station ID")
 
+    # refresh command
+    subparsers.add_parser("refresh", help="Refresh the access token")
+
+    # status command
+    subparsers.add_parser("status", help="Show current token status")
+
     args = parser.parse_args()
 
     # Dispatch to appropriate command handler
@@ -357,6 +426,10 @@ def main() -> int:
         return asyncio.run(cmd_cancel(args))
     elif args.command == "station-bikes":
         return asyncio.run(cmd_station_bikes(args))
+    elif args.command == "refresh":
+        return asyncio.run(cmd_refresh(args))
+    elif args.command == "status":
+        return asyncio.run(cmd_status(args))
     else:
         parser.print_help()
         return 1

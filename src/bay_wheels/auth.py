@@ -259,3 +259,56 @@ class AuthManager:
         )
 
         return self._token_info
+
+    async def refresh_token(self) -> TokenInfo:
+        """Refresh the access token using the refresh token.
+
+        Returns:
+            The new token info containing the refreshed access token.
+
+        Raises:
+            AuthenticationError: If refresh fails or no refresh token is available.
+        """
+        if self._token_info is None or self._token_info.refresh_token is None:
+            raise AuthenticationError("No refresh token available")
+
+        headers = self._get_common_headers()
+        headers.update({
+            "authorization": f"Basic {self._get_basic_auth()}",
+            "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+        })
+
+        form_data = urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": self._token_info.refresh_token,
+        })
+
+        response = await self._session.post(
+            f"{BASE_URL}/oauth2/access_token",
+            data=form_data,
+            headers=headers,
+        )
+
+        if response.status_code != 200:
+            raise AuthenticationError(
+                f"Token refresh failed: {response.status_code}\n"
+                f"Body: {response.text}"
+            )
+
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            raise AuthenticationError("Invalid response from auth server")
+
+        # Calculate expiration time
+        expires_in = data.get("expires_in")
+        expires_at = time.time() + expires_in if expires_in else None
+
+        self._token_info = TokenInfo(
+            access_token=data["access_token"],
+            refresh_token=data.get("refresh_token", self._token_info.refresh_token),
+            expires_at=expires_at,
+            token_type=data.get("token_type", "Bearer"),
+        )
+
+        return self._token_info

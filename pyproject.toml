@@ -1,6 +1,6 @@
 [project]
 name = "bay-wheels"
-version = "0.1.0"
+version = "0.2.0"
 description = "Unofficial Python client for the Bay Wheels bike-share API"
 readme = "README.md"
 license = "MIT"

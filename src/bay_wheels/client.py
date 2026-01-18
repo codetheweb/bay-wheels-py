@@ -125,6 +125,17 @@ class BayWheelsClient:
         """
         return await self._auth.login(phone_number, code, email=email)
 
+    async def refresh_token(self) -> TokenInfo:
+        """Refresh the access token using the refresh token.
+
+        Returns:
+            The new token info containing the refreshed access token.
+
+        Raises:
+            AuthenticationError: If refresh fails or no refresh token is available.
+        """
+        return await self._auth.refresh_token()
+
     # Station methods
 
     async def _fetch_gbfs_station_names(self) -> dict[str, str]:

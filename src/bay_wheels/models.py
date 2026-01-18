@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import time
+
+from pydantic import BaseModel, Field, computed_field
 
 
 class Station(BaseModel):
@@ -66,6 +68,23 @@ class TokenInfo(BaseModel):
         default=None, description="Token expiration timestamp"
     )
     token_type: str = Field(default="Bearer", description="Token type")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_expired(self) -> bool:
+        """Check if the token has expired."""
+        if self.expires_at is None:
+            return False
+        return time.time() >= self.expires_at
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def expires_in_seconds(self) -> int | None:
+        """Get the number of seconds until the token expires."""
+        if self.expires_at is None:
+            return None
+        remaining = self.expires_at - time.time()
+        return max(0, int(remaining))
 
 
 class StationBike(BaseModel):
