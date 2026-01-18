@@ -289,8 +289,20 @@ class BayWheelsClient:
             ebike_list = data["panel"]["component_map"]["EbikeListComponent_0"]["ebike_list"]
             for ebike in ebike_list.get("ebikes", []):
                 bike_id = ebike["bike_id"]["text"]["strings"][0]["content"]
-                est_range = ebike["est_range"]["text"]["strings"][0]["content"]
-                bikes.append(StationBike(bike_id=bike_id, estimated_range=est_range))
+                est_range_raw = ebike["est_range"]["text"]["strings"][0]["content"]
+
+                # Parse miles from raw string (e.g., "30 mi" -> 30)
+                est_range_miles = None
+                if est_range_raw:
+                    parts = est_range_raw.split()
+                    if parts and parts[0].isdigit():
+                        est_range_miles = int(parts[0])
+
+                bikes.append(StationBike(
+                    bike_id=bike_id,
+                    estimated_range_raw=est_range_raw,
+                    estimated_range_miles=est_range_miles,
+                ))
         except (KeyError, IndexError):
             # No ebikes at this station or different response structure
             pass

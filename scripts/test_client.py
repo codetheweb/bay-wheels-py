@@ -273,7 +273,7 @@ async def cmd_station_bikes(args: argparse.Namespace) -> int:
             print(f"{'Bike ID':<12} | {'Est. Range':<10}")
             print("-" * 25)
             for bike in bikes:
-                print(f"{bike.bike_id:<12} | {bike.estimated_range:<10}")
+                print(f"{bike.bike_id:<12} | {bike.estimated_range_raw:<10}")
 
             return 0
 

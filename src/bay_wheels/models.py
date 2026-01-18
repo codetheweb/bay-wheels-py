@@ -72,4 +72,7 @@ class StationBike(BaseModel):
     """An e-bike at a station with range info."""
 
     bike_id: str = Field(description="Bike identifier (e.g., '677-6512')")
-    estimated_range: str = Field(description="Estimated range (e.g., '30 mi')")
+    estimated_range_raw: str = Field(description="Estimated range as returned by API (e.g., '30 mi')")
+    estimated_range_miles: int | None = Field(
+        default=None, description="Estimated range in miles, parsed from raw value"
+    )
