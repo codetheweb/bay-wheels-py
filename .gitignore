@@ -1,1 +1,3 @@
 *.har
+*.pyc
+*.claude
