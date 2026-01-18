@@ -348,42 +348,23 @@ class BayWheelsClient:
         if response.status_code != 200:
             raise ReservationError(f"Failed to create reservation: {response.status_code}")
 
-        # Parse response - it may be protobuf-wrapped
-        content = response.content
+        # Parse JSON response
         try:
-            # Try to extract ride_id from response
-            # The response format is protobuf, but we can extract key info
-            # Look for the ride_id pattern in the response
-            ride_id = None
-            status = "reserved"
-
-            # Try JSON first
-            try:
-                data = response.json()
-                ride_id = str(data.get("ride_id", ""))
-                status = data.get("status", "reserved")
-            except json.JSONDecodeError:
-                # Parse protobuf response - ride_id is typically the first field
-                # It appears as a string of digits in the response
-                import re
-
-                text = content.decode("utf-8", errors="ignore")
-                # Look for a long number that could be a ride_id
-                match = re.search(r"\b(\d{15,20})\b", text)
-                if match:
-                    ride_id = match.group(1)
-
-            if not ride_id:
-                raise ReservationError("Could not parse reservation response")
-
-            return Reservation(
-                ride_id=ride_id,
-                status=status,
-                station_id=station_id,
-            )
-
-        except Exception as e:
+            data = response.json()
+        except json.JSONDecodeError as e:
             raise ReservationError(f"Failed to parse reservation response: {e}")
+
+        ride_data = data.get("ride", {})
+        ride_id = ride_data.get("ride_id")
+        if not ride_id:
+            raise ReservationError("Could not find ride_id in response")
+
+        return Reservation(
+            ride_id=str(ride_id),
+            status=ride_data.get("status", "reserved"),
+            station_id=ride_data.get("start_station_id", station_id),
+            bike_id=ride_data.get("rideable", {}).get("rideable_name"),
+        )
 
     async def cancel_reservation(self, ride_id: str) -> None:
         """Cancel an active reservation.

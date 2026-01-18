@@ -215,6 +215,8 @@ async def cmd_reserve(args: argparse.Namespace) -> int:
             print(f"  Ride ID: {reservation.ride_id}")
             print(f"  Status: {reservation.status}")
             print(f"  Station: {reservation.station_id}")
+            if reservation.bike_id:
+                print(f"  Bike: {reservation.bike_id}")
             return 0
 
         except AuthenticationError as e:
