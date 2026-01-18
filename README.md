@@ -5,7 +5,7 @@ An unofficial Python client for the Bay Wheels bike-share API. Supports authenti
 ## Installation
 
 ```bash
-pip install bay-wheels
+uv add bay-wheels
 ```
 
 ## Usage
