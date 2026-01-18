@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from curl_cffi.requests import AsyncSession
@@ -11,9 +10,9 @@ from curl_cffi.requests import AsyncSession
 if TYPE_CHECKING:
     from typing_extensions import Self
 
-from .auth import DEFAULT_TOKEN_PATH, USER_AGENT, AuthManager
+from .auth import USER_AGENT, AuthManager
 from .exceptions import AuthenticationError, BayWheelsError, ReservationError
-from .models import Reservation, Station, TokenInfo
+from .models import Reservation, Station, StationBike, TokenInfo
 
 BASE_URL = "https://api.lyft.com"
 
@@ -24,19 +23,21 @@ class BayWheelsClient:
     def __init__(
         self,
         access_token: str | None = None,
-        token_path: Path | None = DEFAULT_TOKEN_PATH,
+        token_info: TokenInfo | None = None,
     ) -> None:
         """Initialize the client.
 
         Args:
             access_token: Optional access token for authenticated requests.
-            token_path: Path to store/load tokens. Set to None to disable persistence.
+            token_info: Optional full token info (takes precedence over access_token).
         """
         self._session = AsyncSession(impersonate="chrome")
-        self._auth = AuthManager(self._session, token_path=token_path)
+        self._auth = AuthManager(self._session)
         self._owns_session = True
 
-        if access_token is not None:
+        if token_info is not None:
+            self._auth.set_token(token_info)
+        elif access_token is not None:
             self._auth.set_token(TokenInfo(access_token=access_token))
 
     async def __aenter__(self) -> Self:
@@ -67,17 +68,9 @@ class BayWheelsClient:
         """Check if the client has an access token."""
         return self._auth.access_token is not None
 
-    def load_token(self) -> TokenInfo | None:
-        """Load a saved token from disk.
-
-        Returns:
-            The loaded token info, or None if not found.
-        """
-        return self._auth.load_token()
-
-    def clear_token(self) -> None:
-        """Clear the saved token file."""
-        self._auth.clear_token()
+    def set_token(self, token_info: TokenInfo) -> None:
+        """Set the authentication token."""
+        self._auth.set_token(token_info)
 
     def _get_headers(self, authenticated: bool = True) -> dict[str, str]:
         """Get common request headers.
@@ -116,7 +109,7 @@ class BayWheelsClient:
         phone_number: str,
         code: str,
         email: str | None = None,
-    ) -> str:
+    ) -> TokenInfo:
         """Exchange a verification code for an access token.
 
         Args:
@@ -125,15 +118,44 @@ class BayWheelsClient:
             email: Email address for account verification (if required by API).
 
         Returns:
-            The access token.
+            The token info containing the access token.
 
         Raises:
             AuthenticationError: If login fails or email verification is needed.
         """
-        token_info = await self._auth.login(phone_number, code, email=email)
-        return token_info.access_token
+        return await self._auth.login(phone_number, code, email=email)
 
     # Station methods
+
+    async def _fetch_gbfs_station_names(self) -> dict[str, str]:
+        """Fetch station names from the public GBFS feed.
+
+        Returns:
+            Dict mapping station UUID to station name.
+        """
+        try:
+            response = await self._session.get(
+                "https://gbfs.lyft.com/gbfs/2.3/bay/en/station_information.json"
+            )
+            if response.status_code != 200:
+                return {}
+            data = response.json()
+            return {
+                s["station_id"]: s["name"]
+                for s in data.get("data", {}).get("stations", [])
+            }
+        except Exception:
+            return {}
+
+    def _extract_station_uuid(self, station_id: str) -> str | None:
+        """Extract the UUID from a station ID.
+
+        Station IDs are in format 'motivate_XXX_<uuid>'.
+        """
+        parts = station_id.split("_", 2)
+        if len(parts) >= 3:
+            return parts[2]
+        return None
 
     async def list_stations(self) -> list[Station]:
         """Get all stations with current availability.
@@ -176,12 +198,20 @@ class BayWheelsClient:
         if data.get("type") != "FeatureCollection":
             raise BayWheelsError(f"Unexpected response format: {data.get('type')}")
 
+        # Fetch station names from GBFS
+        gbfs_names = await self._fetch_gbfs_station_names()
+
         stations = []
         for feature in data.get("features", []):
             props = feature.get("properties", {})
             # map_item_type=1 are stations, map_item_type=2 are individual bikes
             if props.get("map_item_type") == 1:
-                stations.append(Station.from_geojson_feature(feature))
+                station = Station.from_geojson_feature(feature)
+                # Look up name from GBFS using the UUID portion of the ID
+                uuid = self._extract_station_uuid(station.id)
+                if uuid and uuid in gbfs_names:
+                    station.name = gbfs_names[uuid]
+                stations.append(station)
 
         return stations
 
@@ -203,6 +233,69 @@ class BayWheelsClient:
             if station.id == station_id:
                 return station
         return None
+
+    async def get_station_bikes(self, station_id: str) -> list[StationBike]:
+        """Get e-bikes at a station with their estimated range.
+
+        Args:
+            station_id: The station ID.
+
+        Returns:
+            List of bikes with range info.
+
+        Raises:
+            BayWheelsError: If the request fails.
+            AuthenticationError: If not authenticated.
+        """
+        if not self.is_authenticated:
+            raise AuthenticationError("Must be authenticated to get station bikes")
+
+        # The API requires a panel_request with UI capabilities
+        request_body = {
+            "station_id": station_id,
+            "lastmile_rewards_user_education_messages_enabled": True,
+            "panel_request": {
+                "panel_specification": {
+                    "canvas_capabilities": {
+                        "label_capabilities": {"rich_text": True},
+                    },
+                    "native_components_inside_canvas_supported": True,
+                },
+                "server_actions": {},
+            },
+        }
+
+        response = await self._session.post(
+            f"{BASE_URL}/v1/lbsbff/panel/pre-ride-station",
+            json=request_body,
+            headers=self._get_headers(),
+        )
+
+        if response.status_code == 403:
+            raise AuthenticationError("Access denied - token may be expired")
+
+        if response.status_code != 200:
+            raise BayWheelsError(f"Failed to get station bikes: {response.status_code}")
+
+        # Parse JSON response
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            raise BayWheelsError(f"Failed to parse response: {e}")
+
+        # Extract bike info from response
+        bikes: list[StationBike] = []
+        try:
+            ebike_list = data["panel"]["component_map"]["EbikeListComponent_0"]["ebike_list"]
+            for ebike in ebike_list.get("ebikes", []):
+                bike_id = ebike["bike_id"]["text"]["strings"][0]["content"]
+                est_range = ebike["est_range"]["text"]["strings"][0]["content"]
+                bikes.append(StationBike(bike_id=bike_id, estimated_range=est_range))
+        except (KeyError, IndexError):
+            # No ebikes at this station or different response structure
+            pass
+
+        return bikes
 
     # Reservation methods
 

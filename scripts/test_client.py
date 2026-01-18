@@ -1,113 +1,364 @@
 #!/usr/bin/env python3
-"""Interactive test script for the Bay Wheels client."""
+"""CLI for the Bay Wheels client."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import math
 import sys
+from pathlib import Path
 
-from bay_wheels import BayWheelsClient, AuthenticationError
+from bay_wheels import AuthenticationError, BayWheelsClient, TokenInfo
+
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "bay_wheels" / "config.json"
 
 
-async def authenticate(client: BayWheelsClient) -> bool:
-    """Handle authentication flow.
+def haversine_distance(
+    lat1: float, lon1: float, lat2: float, lon2: float
+) -> float:
+    """Calculate distance between two points in miles using Haversine formula."""
+    R = 3959  # Earth's radius in miles
+
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+
+def load_token(config_path: Path) -> TokenInfo | None:
+    """Load token from config file.
+
+    Args:
+        config_path: Path to the config file.
 
     Returns:
-        True if authentication succeeded, False otherwise.
+        The loaded token info, or None if not found or invalid.
     """
-    # Try to load existing token
-    token_info = client.load_token()
+    if not config_path.exists():
+        return None
+
+    try:
+        data = json.loads(config_path.read_text())
+        return TokenInfo(**data)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def save_token(token_info: TokenInfo, config_path: Path) -> None:
+    """Save token to config file.
+
+    Args:
+        token_info: The token info to save.
+        config_path: Path to the config file.
+    """
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(token_info.model_dump(), indent=2))
+
+
+def clear_token(config_path: Path) -> None:
+    """Clear the saved token file.
+
+    Args:
+        config_path: Path to the config file.
+    """
+    if config_path.exists():
+        config_path.unlink()
+
+
+async def cmd_login(args: argparse.Namespace) -> int:
+    """Handle the login command."""
+    config_path = Path(args.config)
+
+    # Check for existing token
+    token_info = load_token(config_path)
     if token_info is not None:
-        print(f"Loaded saved token: {token_info.access_token[:20]}...")
-        return True
-
-    # Need to authenticate
-    print("\nNo saved token found. Starting authentication flow...")
-    phone = input("Enter phone number (E.164 format, e.g., +14155551234): ").strip()
-
-    if not phone.startswith("+"):
-        print("Phone number must start with + and include country code")
-        return False
-
-    try:
-        print(f"Requesting verification code for {phone}...")
-        await client.request_code(phone)
-        print("Verification code sent!")
-
-        code = input("Enter verification code: ").strip()
-
-        # First attempt without email
-        try:
-            access_token = await client.login(phone, code)
-            print(f"Logged in successfully! Token: {access_token[:20]}...")
-            return True
-        except AuthenticationError as e:
-            # Check if email verification is required
-            if "Email verification required" in str(e):
-                print(f"\n{e}")
-                email = input("Enter your email address: ").strip()
-                access_token = await client.login(phone, code, email=email)
-                print(f"Logged in successfully! Token: {access_token[:20]}...")
-                return True
-            raise
-
-    except AuthenticationError as e:
-        print(f"Authentication failed: {e}")
-        return False
-
-
-async def list_stations(client: BayWheelsClient) -> None:
-    """List all stations with availability."""
-    print("\nFetching stations...")
-    try:
-        stations = await client.list_stations()
-        print(f"Found {len(stations)} stations\n")
-
-        # Sort by total bikes available
-        stations.sort(
-            key=lambda s: s.ebikes_available + s.bikes_available, reverse=True
-        )
-
-        # Show top 20 stations with bikes
-        print("Top 20 stations with bikes available:")
-        print("-" * 80)
-        print(f"{'Station ID':<50} {'E-Bikes':>8} {'Bikes':>8} {'Docks':>8}")
-        print("-" * 80)
-
-        for station in stations[:20]:
-            name = station.name or station.id[-30:]
-            print(
-                f"{name:<50} {station.ebikes_available:>8} "
-                f"{station.bikes_available:>8} {station.docks_available:>8}"
-            )
-
-    except Exception as e:
-        print(f"Failed to list stations: {e}")
-
-
-async def main() -> int:
-    """Main entry point."""
-    parser = argparse.ArgumentParser(description="Test the Bay Wheels client")
-    parser.add_argument(
-        "--clear-token",
-        action="store_true",
-        help="Clear saved token and re-authenticate",
-    )
-    args = parser.parse_args()
+        print(f"Already logged in (token: {token_info.access_token[:20]}...)")
+        print("Use --force to re-authenticate.")
+        if not getattr(args, "force", False):
+            return 0
+        print("Re-authenticating...")
 
     async with BayWheelsClient() as client:
-        if args.clear_token:
-            print("Clearing saved token...")
-            client.clear_token()
+        phone = input("Enter phone number (E.164 format, e.g., +14155551234): ").strip()
 
-        if not await authenticate(client):
+        if not phone.startswith("+"):
+            print("Phone number must start with + and include country code")
             return 1
 
-        await list_stations(client)
+        try:
+            print(f"Requesting verification code for {phone}...")
+            await client.request_code(phone)
+            print("Verification code sent!")
 
-    return 0
+            code = input("Enter verification code: ").strip()
+
+            # First attempt without email
+            try:
+                token_info = await client.login(phone, code)
+            except AuthenticationError as e:
+                # Check if email verification is required
+                if "Email verification required" in str(e):
+                    print(f"\n{e}")
+                    email = input("Enter your email address: ").strip()
+                    token_info = await client.login(phone, code, email=email)
+                else:
+                    raise
+
+            save_token(token_info, config_path)
+            print(f"Logged in successfully! Token saved to {config_path}")
+            return 0
+
+        except AuthenticationError as e:
+            print(f"Authentication failed: {e}")
+            return 1
+
+
+async def cmd_list_stations(args: argparse.Namespace) -> int:
+    """Handle the list-stations command."""
+    config_path = Path(args.config)
+    token_info = load_token(config_path)
+
+    if token_info is None:
+        print("Not logged in. Run 'login' first.")
+        return 1
+
+    # Check --nearby requires both --lat and --lon
+    nearby_mode = args.lat is not None and args.lon is not None
+    if (args.lat is None) != (args.lon is None):
+        print("Error: --lat and --lon must be provided together.")
+        return 1
+
+    async with BayWheelsClient(token_info=token_info) as client:
+        try:
+            print("Fetching stations...")
+            stations = await client.list_stations()
+            print(f"Found {len(stations)} stations\n")
+
+            if nearby_mode:
+                user_lat, user_lon = args.lat, args.lon
+                # Calculate distance for each station and sort by distance
+                stations_with_dist = []
+                for s in stations:
+                    # Station coordinates are (lon, lat)
+                    dist = haversine_distance(user_lat, user_lon, s.coordinates[1], s.coordinates[0])
+                    stations_with_dist.append((s, dist))
+                stations_with_dist.sort(key=lambda x: x[1])
+
+                limit = args.n if args.n else 20
+                print(f"Nearest {limit} stations:")
+                print("-" * 135)
+                print(f"{'Name':<40} {'ID':<52} {'Dist':>7} {'E-Bikes':>8} {'Bikes':>8} {'Docks':>8}")
+                print("-" * 135)
+
+                for station, dist in stations_with_dist[:limit]:
+                    name = (station.name or "Unknown")[:39]
+                    print(
+                        f"{name:<40} {station.id:<52} {dist:>6.2f}m {station.ebikes_available:>8} "
+                        f"{station.bikes_available:>8} {station.docks_available:>8}"
+                    )
+            else:
+                # Sort by total bikes available
+                stations.sort(
+                    key=lambda s: s.ebikes_available + s.bikes_available, reverse=True
+                )
+
+                limit = args.n if args.n else 20
+                print(f"Top {limit} stations with bikes available:")
+                print("-" * 127)
+                print(f"{'Name':<40} {'ID':<52} {'E-Bikes':>8} {'Bikes':>8} {'Docks':>8}")
+                print("-" * 127)
+
+                for station in stations[:limit]:
+                    name = (station.name or "Unknown")[:39]
+                    print(
+                        f"{name:<40} {station.id:<52} {station.ebikes_available:>8} "
+                        f"{station.bikes_available:>8} {station.docks_available:>8}"
+                    )
+
+            return 0
+
+        except AuthenticationError as e:
+            print(f"Authentication error: {e}")
+            print("Your token may have expired. Run 'login' again.")
+            return 1
+        except Exception as e:
+            print(f"Failed to list stations: {e}")
+            return 1
+
+
+async def cmd_reserve(args: argparse.Namespace) -> int:
+    """Handle the reserve command."""
+    config_path = Path(args.config)
+    token_info = load_token(config_path)
+
+    if token_info is None:
+        print("Not logged in. Run 'login' first.")
+        return 1
+
+    async with BayWheelsClient(token_info=token_info) as client:
+        try:
+            print(f"Creating reservation at station {args.station_id}...")
+            reservation = await client.create_reservation(
+                args.station_id, bike_type=args.type
+            )
+            print(f"Reservation created!")
+            print(f"  Ride ID: {reservation.ride_id}")
+            print(f"  Status: {reservation.status}")
+            print(f"  Station: {reservation.station_id}")
+            return 0
+
+        except AuthenticationError as e:
+            print(f"Authentication error: {e}")
+            print("Your token may have expired. Run 'login' again.")
+            return 1
+        except Exception as e:
+            print(f"Failed to create reservation: {e}")
+            return 1
+
+
+async def cmd_cancel(args: argparse.Namespace) -> int:
+    """Handle the cancel command."""
+    config_path = Path(args.config)
+    token_info = load_token(config_path)
+
+    if token_info is None:
+        print("Not logged in. Run 'login' first.")
+        return 1
+
+    async with BayWheelsClient(token_info=token_info) as client:
+        try:
+            print(f"Cancelling reservation {args.ride_id}...")
+            await client.cancel_reservation(args.ride_id)
+            print("Reservation cancelled.")
+            return 0
+
+        except AuthenticationError as e:
+            print(f"Authentication error: {e}")
+            print("Your token may have expired. Run 'login' again.")
+            return 1
+        except Exception as e:
+            print(f"Failed to cancel reservation: {e}")
+            return 1
+
+
+async def cmd_station_bikes(args: argparse.Namespace) -> int:
+    """Handle the station-bikes command."""
+    config_path = Path(args.config)
+    token_info = load_token(config_path)
+
+    if token_info is None:
+        print("Not logged in. Run 'login' first.")
+        return 1
+
+    async with BayWheelsClient(token_info=token_info) as client:
+        try:
+            print(f"Fetching bikes at station {args.station_id}...")
+            bikes = await client.get_station_bikes(args.station_id)
+
+            if not bikes:
+                print("No e-bikes found at this station.")
+                return 0
+
+            print(f"\nFound {len(bikes)} e-bike(s):\n")
+            print(f"{'Bike ID':<12} | {'Est. Range':<10}")
+            print("-" * 25)
+            for bike in bikes:
+                print(f"{bike.bike_id:<12} | {bike.estimated_range:<10}")
+
+            return 0
+
+        except AuthenticationError as e:
+            print(f"Authentication error: {e}")
+            print("Your token may have expired. Run 'login' again.")
+            return 1
+        except Exception as e:
+            print(f"Failed to get station bikes: {e}")
+            return 1
+
+
+def main() -> int:
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Bay Wheels CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help=f"Path to config file (default: {DEFAULT_CONFIG_PATH})",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # login command
+    login_parser = subparsers.add_parser("login", help="Interactive login flow")
+    login_parser.add_argument(
+        "--force", action="store_true", help="Force re-authentication"
+    )
+
+    # list-stations command
+    list_parser = subparsers.add_parser(
+        "list-stations", help="List stations with availability"
+    )
+    list_parser.add_argument(
+        "-n", type=int, default=20, help="Number of stations to show (default: 20)"
+    )
+    list_parser.add_argument(
+        "--lat", type=float, help="Latitude for nearby search"
+    )
+    list_parser.add_argument(
+        "--lon", type=float, help="Longitude for nearby search"
+    )
+
+    # reserve command
+    reserve_parser = subparsers.add_parser(
+        "reserve", help="Create a reservation at a station"
+    )
+    reserve_parser.add_argument("station_id", help="Station ID to reserve from")
+    reserve_parser.add_argument(
+        "--type",
+        choices=["ebike", "bike"],
+        default="ebike",
+        help="Type of bike to reserve (default: ebike)",
+    )
+
+    # cancel command
+    cancel_parser = subparsers.add_parser("cancel", help="Cancel a reservation")
+    cancel_parser.add_argument("ride_id", help="Ride ID to cancel")
+
+    # station-bikes command
+    bikes_parser = subparsers.add_parser(
+        "station-bikes", help="List e-bikes at a station with range"
+    )
+    bikes_parser.add_argument("station_id", help="Station ID")
+
+    args = parser.parse_args()
+
+    # Dispatch to appropriate command handler
+    if args.command == "login":
+        return asyncio.run(cmd_login(args))
+    elif args.command == "list-stations":
+        return asyncio.run(cmd_list_stations(args))
+    elif args.command == "reserve":
+        return asyncio.run(cmd_reserve(args))
+    elif args.command == "cancel":
+        return asyncio.run(cmd_cancel(args))
+    elif args.command == "station-bikes":
+        return asyncio.run(cmd_station_bikes(args))
+    else:
+        parser.print_help()
+        return 1
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    sys.exit(main())

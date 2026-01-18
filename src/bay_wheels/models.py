@@ -66,3 +66,10 @@ class TokenInfo(BaseModel):
         default=None, description="Token expiration timestamp"
     )
     token_type: str = Field(default="Bearer", description="Token type")
+
+
+class StationBike(BaseModel):
+    """An e-bike at a station with range info."""
+
+    bike_id: str = Field(description="Bike identifier (e.g., '677-6512')")
+    estimated_range: str = Field(description="Estimated range (e.g., '30 mi')")

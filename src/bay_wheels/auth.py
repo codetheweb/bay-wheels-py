@@ -6,7 +6,6 @@ import base64
 import json
 import time
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
@@ -26,25 +25,17 @@ BASE_URL = "https://api.lyft.com"
 USER_AGENT = "com.motivateco.gobike:iOS:26.2:2025.52.3.27469952"
 USER_DEVICE = "iPhone14,3"
 
-DEFAULT_TOKEN_PATH = Path.home() / ".bay_wheels_token"
-
 
 class AuthManager:
     """Manages authentication with the Bay Wheels API."""
 
-    def __init__(
-        self,
-        session: AsyncSession,
-        token_path: Path | None = DEFAULT_TOKEN_PATH,
-    ) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         """Initialize the auth manager.
 
         Args:
             session: The HTTP session to use for requests.
-            token_path: Path to store/load tokens. Set to None to disable persistence.
         """
         self._session = session
-        self._token_path = token_path
         self._token_info: TokenInfo | None = None
 
         # Generate persistent IDs for this session (app uses same IDs across requests)
@@ -67,37 +58,6 @@ class AuthManager:
     def set_token(self, token_info: TokenInfo) -> None:
         """Set the current token info."""
         self._token_info = token_info
-
-    def load_token(self) -> TokenInfo | None:
-        """Load token from the configured path.
-
-        Returns:
-            The loaded token info, or None if not found or invalid.
-        """
-        if self._token_path is None or not self._token_path.exists():
-            return None
-
-        try:
-            data = json.loads(self._token_path.read_text())
-            self._token_info = TokenInfo(**data)
-            return self._token_info
-        except (json.JSONDecodeError, ValueError):
-            return None
-
-    def save_token(self) -> None:
-        """Save the current token to the configured path."""
-        if self._token_path is None or self._token_info is None:
-            return
-
-        self._token_path.write_text(
-            json.dumps(self._token_info.model_dump(), indent=2)
-        )
-
-    def clear_token(self) -> None:
-        """Clear the saved token file."""
-        if self._token_path is not None and self._token_path.exists():
-            self._token_path.unlink()
-        self._token_info = None
 
     def _get_basic_auth(self) -> str:
         """Get Basic auth header from client credentials."""
@@ -298,5 +258,4 @@ class AuthManager:
             token_type=data.get("token_type", "Bearer"),
         )
 
-        self.save_token()
         return self._token_info

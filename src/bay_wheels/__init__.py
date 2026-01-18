@@ -2,7 +2,7 @@
 
 from .client import BayWheelsClient
 from .exceptions import AuthenticationError, BayWheelsError, ReservationError
-from .models import Reservation, Station, TokenInfo
+from .models import Reservation, Station, StationBike, TokenInfo
 
 __all__ = [
     "BayWheelsClient",
@@ -11,5 +11,6 @@ __all__ = [
     "ReservationError",
     "Reservation",
     "Station",
+    "StationBike",
     "TokenInfo",
 ]
